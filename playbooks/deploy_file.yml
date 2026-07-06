@@ -1,0 +1,98 @@
+---
+# ========================================
+# 변수 설정 영역
+# ========================================
+- name: 파일 배포 및 검증
+  hosts: "{{ target_group | default('all') }}"
+  become: true
+  gather_facts: false
+  vars:
+    file_version: "{{ file_version }}"              # Jenkins/AWX가 전달 (필수)
+    source_filename: "config-{{ file_version }}.conf"
+    dest_path: "{{ dest_path | default('/tmp/config.conf') }}"
+    file_owner: "{{ file_owner | default('root') }}"
+    file_group: "{{ file_group | default('root') }}"
+    file_mode: "{{ file_mode | default('0644') }}"
+    source_local_path: "files/deploy/{{ source_filename }}"
+
+  tasks:
+    - name: 배포 대상 파일 존재 확인 (컨트롤 노드 기준)
+      ansible.builtin.stat:
+        path: "{{ source_local_path }}"
+      delegate_to: localhost
+      run_once: true
+      register: source_check
+
+    - name: 파일 없으면 즉시 실패 (버전 오타 방지)
+      ansible.builtin.fail:
+        msg: "{{ source_local_path }} 파일이 저장소에 없습니다. 버전을 다시 확인하세요."
+      when: not source_check.stat.exists
+      run_once: true
+
+    - name: 배포 전 기존 파일 존재 여부 확인
+      ansible.builtin.stat:
+        path: "{{ dest_path }}"
+      register: before_deploy
+
+    - name: 파일 배포 (자동 백업 포함)
+      ansible.builtin.copy:
+        src: "{{ source_local_path }}"
+        dest: "{{ dest_path }}"
+        owner: "{{ file_owner }}"
+        group: "{{ file_group }}"
+        mode: "{{ file_mode }}"
+        backup: true                # 기존 파일은 .날짜시각 형태로 자동 백업됨
+      register: deploy_result
+
+    - name: 배포 후 파일 체크섬 확인 (실제로 제대로 들어갔는지 검증)
+      ansible.builtin.stat:
+        path: "{{ dest_path }}"
+        checksum_algorithm: sha256
+      register: after_deploy
+
+    - name: 원본 파일 체크섬 확인 (컨트롤 노드 기준)
+      ansible.builtin.stat:
+        path: "{{ source_local_path }}"
+        checksum_algorithm: sha256
+      delegate_to: localhost
+      register: source_checksum
+
+    - name: 배포 검증 (원본과 대상의 체크섬 일치 여부)
+      ansible.builtin.set_fact:
+        deploy_verified: "{{ after_deploy.stat.checksum == source_checksum.stat.checksum }}"
+
+    - name: 결과 통계 등록
+      ansible.builtin.set_stats:
+        data:
+          file_deploy_result:
+            host: "{{ inventory_hostname }}"
+            version: "{{ file_version }}"
+            dest_path: "{{ dest_path }}"
+            changed: "{{ deploy_result.changed }}"
+            verified: "{{ deploy_verified }}"
+            backup_file: "{{ deploy_result.backup_file | default('없음') }}"
+        per_host: true
+
+# 전체 결과 요약
+- name: 전체 배포 결과 요약 리포트
+  hosts: localhost
+  gather_facts: false
+  vars:
+    target_group_name: "{{ target_group | default('all') }}"
+
+  tasks:
+    - name: 서버별 최종 결과 출력
+      ansible.builtin.debug:
+        msg: >-
+          {{ item }} : 
+          {{ '✅ 배포 성공 (검증 완료)' 
+             if hostvars[item]['deploy_verified'] | default(false) 
+             else '❌ 배포 실패 또는 검증 불일치' }}
+      loop: "{{ groups[target_group_name] }}"
+      loop_control:
+        label: "{{ item }}"
+
+    - name: 실패 서버가 있으면 Job 자체를 실패 처리
+      ansible.builtin.fail:
+        msg: "일부 서버에서 파일 배포 검증에 실패했습니다."
+      when: groups[target_group_name] | map('extract', hostvars, 'deploy_verified') | select('equalto', false) | list | length > 0
