@@ -20,7 +20,7 @@ pipeline {
                         returnStdout: true
                     ).trim()
                     if (env.RPM_VERSION == '') {
-                        echo "태그 없는 일반 push입니다. 배포는 건너뜁니다."
+                        echo "태그 없는 일반 push입니다. 배포는 건너뜁니다. 주의."
                     }
                 }
             }
