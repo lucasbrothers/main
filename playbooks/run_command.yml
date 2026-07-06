@@ -1,0 +1,12 @@
+---
+- name: 운영자 범용 명령 실행
+  hosts: "{{ target_group | default('all') }}"
+  gather_facts: false
+  tasks:
+    - name: 지정된 명령 실행
+      ansible.builtin.shell: "{{ command_to_run }}"
+      register: result
+
+    - name: 결과 출력
+      debug:
+        msg: "{{ result.stdout_lines }}"
