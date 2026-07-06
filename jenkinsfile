@@ -1,0 +1,74 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'TARGET_ENV', defaultValue: 'staging', description: '배포 대상')
+    }
+
+    environment {
+        AWX_URL = 'http://192.168.192.132/'          // 같은 docker 네트워크면 컨테이너명, 아니면 서버 IP
+        JOB_TEMPLATE_ID = '15'                 // AWX Job Template 상세화면 URL에서 확인한 ID
+    }
+
+    stages {
+        stage('Checkout & 버전 추출') {
+            steps {
+                checkout scm
+                script {
+                    env.RPM_VERSION = sh(
+                        script: "git describe --tags --exact-match 2>/dev/null | sed 's/^v//' || echo ''",
+                        returnStdout: true
+                    ).trim()
+                    if (env.RPM_VERSION == '') {
+                        echo "태그 없는 일반 push입니다. 배포는 건너뜁니다."
+                    }
+                }
+            }
+        }
+
+        stage('AWX Job Template 실행') {
+            when {
+                expression { env.RPM_VERSION != '' }
+            }
+            steps {
+                withCredentials([string(credentialsId: 'awx-api-token', variable: 'AWX_TOKEN')]) {
+                    sh '''
+                        RESPONSE=$(curl -s -k -X POST \
+                          -H "Authorization: Bearer $AWX_TOKEN" \
+                          -H "Content-Type: application/json" \
+                          -d "{\\"extra_vars\\": {\\"rpm_version\\": \\"${RPM_VERSION}\\", \\"target_group\\": \\"${TARGET_ENV}\\"}}" \
+                          "$AWX_URL/api/v2/job_templates/$JOB_TEMPLATE_ID/launch/")
+                        echo "$RESPONSE"
+                        JOB_ID=$(echo "$RESPONSE" | python3 -c "import sys, json; print(json.load(sys.stdin)['job'])")
+                        echo "AWX Job ID: $JOB_ID"
+                        echo "$JOB_ID" > job_id.txt
+                    '''
+                }
+            }
+        }
+
+        stage('결과 대기') {
+            when {
+                expression { env.RPM_VERSION != '' }
+            }
+            steps {
+                withCredentials([string(credentialsId: 'awx-api-token', variable: 'AWX_TOKEN')]) {
+                    sh '''
+                        JOB_ID=$(cat job_id.txt)
+                        STATUS="pending"
+                        while [ "$STATUS" != "successful" ] && [ "$STATUS" != "failed" ] && [ "$STATUS" != "error" ]; do
+                          sleep 5
+                          STATUS=$(curl -s -k -H "Authorization: Bearer $AWX_TOKEN" \
+                            "$AWX_URL/api/v2/jobs/$JOB_ID/" | python3 -c "import sys, json; print(json.load(sys.stdin)['status'])")
+                          echo "현재 상태: $STATUS"
+                        done
+                        if [ "$STATUS" != "successful" ]; then
+                          echo "배포 실패"
+                          exit 1
+                        fi
+                    '''
+                }
+            }
+        }
+    }
+}
