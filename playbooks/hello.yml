@@ -1,0 +1,8 @@
+---
+- name: AWX 연동 테스트용 샘플 플레이북
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: 간단한 메시지 출력
+      debug:
+        msg: "AWX와 GitHub 연동이 정상적으로 완료되었습니다!"
