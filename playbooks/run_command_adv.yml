@@ -1,0 +1,25 @@
+---
+- name: 운영자 범용 명령 실행 및 결과 요약
+  hosts: "{{ target_group | default('all') }}"
+  gather_facts: false
+  tasks:
+    - name: 지정된 명령 실행
+      ansible.builtin.shell: "{{ command_to_run }}"
+      register: result
+
+    - name: 결과를 통계로 등록
+      ansible.builtin.set_stats:
+        data:
+          host_results: "{{ inventory_hostname }} : {{ result.stdout }}"
+        per_host: true
+
+- name: 전체 결과 요약 출력
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: 전체 서버 결과 한 번에 출력
+      debug:
+        msg: "{{ hostvars[item]['result']['stdout'] | default('N/A') }}"
+      loop: "{{ groups[target_group | default('all')] }}"
+      loop_control:
+        label: "{{ item }}"
